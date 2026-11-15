@@ -2536,6 +2536,7 @@ class RedEnergyCl2EnergySensor(RedEnergyBaseSensor):
             "rejection_reasons": data.get("rejection_reasons"),
             "rates_used": data.get("rates_used"),
             "rates_source": data.get("rates_source"),
+            "tariff_sources": data.get("tariff_sources"),
             "description": "Inferred controlled-load energy, algebraically separated from blended TOU+CL2 interval data",
         }
 

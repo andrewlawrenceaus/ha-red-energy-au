@@ -888,6 +888,9 @@ class RedEnergyAPI:
                 intervals.append({
                     "interval_start": interval.get("intervalStart"),
                     "consumption_kwh": consumption,
+                    # For rebuilding the export breakdowns when the period
+                    # has to be recovered (tou_fallback.py).
+                    "generation_kwh": generation,
                     "consumption_dollar_incl_gst": (
                         float(consumption_dollar_incl_gst_raw)
                         if consumption_dollar_incl_gst_raw is not None

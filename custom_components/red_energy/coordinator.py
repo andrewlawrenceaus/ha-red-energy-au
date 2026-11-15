@@ -14,6 +14,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import RedEnergyAPI, RedEnergyAPIError, RedEnergyAuthError
 from .cl2_inference import infer_cl2_interval, resolve_rate_roles
+from .tou_fallback import apply_tou_fallback
 from .data_validation import (
     DataValidationError,
     validate_billed_usage,
@@ -347,12 +348,14 @@ class RedEnergyDataCoordinator(DataUpdateCoordinator):
                         
                         # Validate usage data
                         validated_usage = validate_usage_data(raw_usage)
+                        tariff_sources = self._apply_tou_fallback(validated_usage, service)
                         
                         period_days = (end_date - start_date).days
                         
                         property_usage[service_type] = {
                             "consumer_number": consumer_number,
                             "usage_data": validated_usage,
+                            "tariff_sources": tariff_sources,
                             "last_updated": end_date.isoformat(),
                             "start_date": start_date.isoformat(),
                             "end_date": end_date.isoformat(),
@@ -557,6 +560,43 @@ class RedEnergyDataCoordinator(DataUpdateCoordinator):
             entry["meter_reading"] = await self._fetch_meter_reading(consumer_number)
         return entry
 
+    def _apply_tou_fallback(
+        self, validated_usage: dict[str, Any], service: dict[str, Any]
+    ) -> dict[str, int] | None:
+        """Recover TOU periods for half-hours labelled ALLDAY (see tou_fallback.py).
+
+        Logs, at debug level, how each day's half-hours got their period and
+        the controlled load inferred for the day, for checking the recovered
+        periods against a bill.
+        """
+        rates = service.get("rates", [])
+        tariff_sources = apply_tou_fallback(validated_usage, rates)
+        if tariff_sources is None:
+            return None
+
+        _LOGGER.debug(
+            "Recovered TOU periods for consumer %s: %s", service.get("consumer_number"), tariff_sources
+        )
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            roles = resolve_rate_roles(rates)
+            cl2_rate = roles["cl2_rate_incl_gst"]
+            for entry in validated_usage.get("usage_data", []):
+                intervals = [i for i in entry.get("intervals") or [] if isinstance(i, dict)]
+                sources: dict[str, int] = {}
+                for interval in intervals:
+                    source = interval.get("tariff_component_source", "reported")
+                    sources[source] = sources.get(source, 0) + 1
+                cl2_kwh = None
+                if cl2_rate is not None and not roles["unresolved_roles"]:
+                    results = [infer_cl2_interval(i, roles["rates_incl_gst"], cl2_rate) for i in intervals]
+                    cl2_kwh = round(sum(r["cl2_kwh"] for r in results if r["accepted"]), 3)
+                _LOGGER.debug(
+                    "  %s: periods %s; peak/shoulder/offpeak import %.3f/%.3f/%.3f kWh; CL2 %s kWh",
+                    entry.get("date"), sources, entry.get("peak_import_usage", 0.0),
+                    entry.get("shoulder_import_usage", 0.0), entry.get("offpeak_import_usage", 0.0), cl2_kwh,
+                )
+        return tariff_sources
+
     async def _fetch_meter_reading(self, consumer_number: str) -> dict[str, Any] | None:
         """Fetch the meter register read from the consumer's latest bill.
 
@@ -619,12 +659,14 @@ class RedEnergyDataCoordinator(DataUpdateCoordinator):
                     continue
                 
                 validated_usage = validate_usage_data(raw_usage)
+                tariff_sources = self._apply_tou_fallback(validated_usage, service)
                 
                 period_days = (end_date - start_date).days
                 
                 property_usage[service_type] = {
                     "consumer_number": consumer_number,
                     "usage_data": validated_usage,
+                    "tariff_sources": tariff_sources,
                     "last_updated": end_date.isoformat(),
                     "start_date": start_date.isoformat(),
                     "end_date": end_date.isoformat(),
@@ -1194,6 +1236,10 @@ class RedEnergyDataCoordinator(DataUpdateCoordinator):
             "rejection_reasons": rejection_reasons,
             "rates_used": {**rates_incl_gst, "CL2": cl2_rate_incl_gst},
             "rates_source": "current plan rates (no historical rate data available)",
+            # None when the API labelled every half-hour; otherwise how many
+            # half-hours kept their label or had their period recovered from
+            # their price or the learned TOU times (tou_fallback.py).
+            "tariff_sources": service_data.get("tariff_sources"),
         }
 
     def _get_latest_usage_entry(self, property_id: str, service_type: str) -> dict[str, Any] | None:
