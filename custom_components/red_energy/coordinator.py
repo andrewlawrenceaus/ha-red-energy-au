@@ -587,13 +587,21 @@ class RedEnergyDataCoordinator(DataUpdateCoordinator):
                     source = interval.get("tariff_component_source", "reported")
                     sources[source] = sources.get(source, 0) + 1
                 cl2_kwh = None
+                corrected = {"PEAK": 0.0, "SHOULDER": 0.0, "OFFPEAK": 0.0}
                 if cl2_rate is not None and not roles["unresolved_roles"]:
-                    results = [infer_cl2_interval(i, roles["rates_incl_gst"], cl2_rate) for i in intervals]
-                    cl2_kwh = round(sum(r["cl2_kwh"] for r in results if r["accepted"]), 3)
+                    cl2_kwh = 0.0
+                    for interval in intervals:
+                        result = infer_cl2_interval(interval, roles["rates_incl_gst"], cl2_rate)
+                        if result["accepted"]:
+                            cl2_kwh += result["cl2_kwh"]
+                            corrected[interval["tariff_component"]] += result["tou_kwh"]
+                    cl2_kwh = round(cl2_kwh, 3)
                 _LOGGER.debug(
-                    "  %s: periods %s; peak/shoulder/offpeak import %.3f/%.3f/%.3f kWh; CL2 %s kWh",
+                    "  %s: periods %s; peak/shoulder/offpeak import %.3f/%.3f/%.3f kWh, "
+                    "without CL2 %.3f/%.3f/%.3f kWh; CL2 %s kWh",
                     entry.get("date"), sources, entry.get("peak_import_usage", 0.0),
-                    entry.get("shoulder_import_usage", 0.0), entry.get("offpeak_import_usage", 0.0), cl2_kwh,
+                    entry.get("shoulder_import_usage", 0.0), entry.get("offpeak_import_usage", 0.0),
+                    corrected["PEAK"], corrected["SHOULDER"], corrected["OFFPEAK"], cl2_kwh,
                 )
         return tariff_sources
 
